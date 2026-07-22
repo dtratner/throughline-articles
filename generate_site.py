@@ -3,23 +3,24 @@ from html import escape
 from pathlib import Path
 import re
 
-import feedparser
 import requests
 
 
-FEED_URL = "https://dctsports.substack.com/feed"
+API_URL = "https://dctsports.substack.com/api/v1/posts"
+PUBLICATION_URL = "https://dctsports.substack.com"
 OUTPUT_FILE = Path("index.html")
+PAGE_SIZE = 25
 
 
 def remove_html(value: str) -> str:
-    """Convert an HTML summary into plain text."""
+    """Convert HTML into plain text."""
     value = re.sub(r"<[^>]+>", " ", value or "")
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
 
 def shorten(value: str, length: int = 240) -> str:
-    """Shorten a summary without cutting a word in half."""
+    """Shorten text without cutting a word in half."""
     if len(value) <= length:
         return value
 
@@ -27,42 +28,107 @@ def shorten(value: str, length: int = 240) -> str:
     return shortened + "…"
 
 
-response = requests.get(
-    FEED_URL,
-    timeout=30,
-    headers={
-        "User-Agent": "Mozilla/5.0 ThroughlineArticleArchive/1.0"
-    },
+def parse_date(value: str):
+    """Convert a Substack date into a datetime."""
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def fetch_all_posts():
+    """Retrieve every published post from Substack."""
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 ThroughlineArticleArchive/1.0",
+            "Accept": "application/json",
+        }
+    )
+
+    posts = []
+    offset = 0
+
+    while True:
+        response = session.get(
+            API_URL,
+            params={
+                "limit": PAGE_SIZE,
+                "offset": offset,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        batch = response.json()
+
+        if not isinstance(batch, list):
+            raise RuntimeError("Substack returned an unexpected response.")
+
+        if not batch:
+            break
+
+        posts.extend(batch)
+        offset += len(batch)
+
+        if len(batch) < PAGE_SIZE:
+            break
+
+    return posts
+
+
+posts = fetch_all_posts()
+
+posts.sort(
+    key=lambda post: parse_date(
+        post.get("post_date")
+        or post.get("published_at")
+        or post.get("publication_date")
+        or ""
+    )
+    or datetime.min,
+    reverse=True,
 )
-response.raise_for_status()
-
-feed_data = response.content
-
-# Remove control characters that XML does not permit.
-feed_data = re.sub(
-    rb"[\x00-\x08\x0B\x0C\x0E-\x1F]",
-    b"",
-    feed_data,
-)
-
-feed = feedparser.parse(feed_data)
-
-if feed.bozo and not feed.entries:
-    raise RuntimeError(f"Could not read the Substack feed: {feed.bozo_exception}")
 
 articles = []
 
-for entry in feed.entries:
-    title = escape(entry.get("title", "Untitled"))
-    link = escape(entry.get("link", "#"), quote=True)
+for post in posts:
+    title = escape(post.get("title") or "Untitled")
 
-    published = entry.get("published_parsed")
+    link = (
+        post.get("canonical_url")
+        or post.get("post_url")
+        or post.get("url")
+    )
+
+    if not link:
+        slug = post.get("slug", "")
+        link = f"{PUBLICATION_URL}/p/{slug}" if slug else PUBLICATION_URL
+
+    link = escape(link, quote=True)
+
+    published = parse_date(
+        post.get("post_date")
+        or post.get("published_at")
+        or post.get("publication_date")
+        or ""
+    )
+
     if published:
-        publication_date = datetime(*published[:6]).strftime("%B %d, %Y").replace(" 0", " ")
+        publication_date = published.strftime("%B %d, %Y").replace(" 0", " ")
     else:
         publication_date = ""
 
-    raw_summary = entry.get("summary", "")
+    raw_summary = (
+        post.get("subtitle")
+        or post.get("description")
+        or post.get("truncated_body_text")
+        or ""
+    )
+
     summary = escape(shorten(remove_html(raw_summary)))
 
     articles.append(
@@ -85,9 +151,7 @@ page = f"""<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
     <title>The Through Line</title>
-
     <style>
         * {{
             box-sizing: border-box;
@@ -175,7 +239,6 @@ page = f"""<!DOCTYPE html>
         }}
     </style>
 </head>
-
 <body>
     <header>
         <h1>The Through Line</h1>
