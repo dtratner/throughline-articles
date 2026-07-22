@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 import feedparser
+import requests
 
 
 FEED_URL = "https://dctsports.substack.com/feed"
@@ -26,7 +27,25 @@ def shorten(value: str, length: int = 240) -> str:
     return shortened + "…"
 
 
-feed = feedparser.parse(FEED_URL)
+response = requests.get(
+    FEED_URL,
+    timeout=30,
+    headers={
+        "User-Agent": "Mozilla/5.0 ThroughlineArticleArchive/1.0"
+    },
+)
+response.raise_for_status()
+
+feed_data = response.content
+
+# Remove control characters that XML does not permit.
+feed_data = re.sub(
+    rb"[\x00-\x08\x0B\x0C\x0E-\x1F]",
+    b"",
+    feed_data,
+)
+
+feed = feedparser.parse(feed_data)
 
 if feed.bozo and not feed.entries:
     raise RuntimeError(f"Could not read the Substack feed: {feed.bozo_exception}")
