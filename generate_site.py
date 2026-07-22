@@ -58,7 +58,7 @@ for entry in feed.entries:
 
     published = entry.get("published_parsed")
     if published:
-        publication_date = datetime(*published[:6]).strftime("%B %-d, %Y")
+        publication_date = datetime(*published[:6]).strftime("%B %d, %Y").replace(" 0", " ")
     else:
         publication_date = ""
 
